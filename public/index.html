@@ -400,9 +400,10 @@ function handleMsg(d){
   if(d.type==='joined'){  myIdx=1; sesKey=d.key; document.getElementById('waiting-box').style.display='flex'; document.getElementById('display-key').textContent=d.key; }
   if(d.type==='opponentJoined'){ document.getElementById('wait-txt').textContent='✅ Opponent joined! Vote for a map →'; showMapVote(); }
   if(d.type==='opponentSelection'){
-    if(d.data.skin)   opSkin=SKINS.find(s=>s.id===d.data.skin)||opSkin;
-    if(d.data.weapon) opWpn=WEAPONS.find(w=>w.id===d.data.weapon)||opWpn;
+    if(d.data.skin)     opSkin=SKINS.find(s=>s.id===d.data.skin)||opSkin;
+    if(d.data.weapon)   opWpn=WEAPONS.find(w=>w.id===d.data.weapon)||opWpn;
     if(d.data.mapVote){ opMapVote=d.data.mapVote; updateMapVoteUI(); checkMapVotes(); }
+    if(d.data.finalMap&&myIdx===1){ wsSend({type:'ready'}); } // P1 sends ready once when host picks map
   }
   if(d.type==='startGame'){ startGame(d.map); }
   if(d.type==='opponentLeft'){ showMsg('OPPONENT LEFT','#ef4444'); setTimeout(()=>{G=null;hideGame();},2000); }
@@ -517,22 +518,11 @@ function checkMapVotes(){
   if(!myMapVote||!opMapVote) return;
   // Both voted — pick winner (same=chosen, diff=random between two)
   let chosen=myMapVote===opMapVote?myMapVote:[myMapVote,opMapVote][Math.random()<.5?0:1];
-  if(myIdx===0){ // host decides
+  if(myIdx===0){ // only host picks final map and sends ready; P1 sends ready when they get finalMap
     wsSend({type:'selection',data:{finalMap:chosen}});
-    setTimeout(()=>wsSend({type:'ready'}),300);
-    setTimeout(()=>wsSend({type:'ready'}),600);
+    wsSend({type:'ready'});
   }
 }
-// Also handle finalMap from server
-const _origHandleMsg=handleMsg;
-handleMsg=function(d){
-  if(d.type==='opponentSelection'&&d.data.finalMap){
-    if(myIdx===1){ setTimeout(()=>wsSend({type:'ready'}),300); setTimeout(()=>wsSend({type:'ready'}),600); }
-    _finalMap=d.data.finalMap;
-  }
-  _origHandleMsg(d);
-};
-let _finalMap=null;
 
 // ═══════════════════════════════════════════════
 // GAME
@@ -732,24 +722,7 @@ document.getElementById('cheat-in').addEventListener('keydown',e=>{
   e.stopPropagation();
 });
 
-// Handle startGame properly via server startGame message
-// the server sends startGame with sels, we now use finalMap
-const __om=ws.onmessage;
-ws.onmessage=e=>{
-  const d=JSON.parse(e.data);
-  if(d.type==='startGame'){
-    const mapId=_finalMap||(d.sels&&d.sels[0]?.mapVote)||'city';
-    startGame(mapId);
-  } else {
-    const old=JSON.parse(JSON.stringify(d));
-    if(d.type==='state'&&G){
-      const op=G.players[1-myIdx];
-      Object.assign(op,{x:d.x,y:d.y,vx:d.vx,vy:d.vy,hp:d.hp,facing:d.facing,atkTimer:d.atkTimer,hurtTimer:d.hurtTimer,dead:d.dead,inf:d.inf,spdMul:d.spdMul,dmgMul:d.dmgMul});
-      if(d.sfx==='hit')SFX.hit();
-      if(d.sfx==='die')SFX.die();
-    } else { handleMsg(d); }
-  }
-};
+// ws.onmessage is set in connect() above — no override needed
 </script>
 </body>
 </html>

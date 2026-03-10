@@ -29,14 +29,22 @@ const server = http.createServer((req, res) => {
 
 const wss = new WebSocket.Server({ server });
 
+function send(ws, msg) {
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+}
+
 function broadcast(session, msg, exclude) {
   session.players.forEach(p => {
     if (p !== exclude && p.readyState === WebSocket.OPEN)
       p.send(JSON.stringify(msg));
   });
 }
-function send(ws, msg) {
-  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+
+// Remove closed/dead connections from a session's player list
+function prunePlayers(session) {
+  session.players = session.players.filter(
+    p => p.readyState === WebSocket.OPEN || p.readyState === WebSocket.CONNECTING
+  );
 }
 
 wss.on('connection', (ws) => {
@@ -47,7 +55,11 @@ wss.on('connection', (ws) => {
     if (data.type === 'create') {
       let key = randomKey();
       while (sessions[key]) key = randomKey();
-      sessions[key] = { players: [ws], selections: [{}, {}], readyCount: 0 };
+      sessions[key] = {
+        players: [ws],
+        selections: [{}, {}],
+        readyPlayers: new Set(), // track per-player ready state
+      };
       ws.sessionKey = key;
       ws.playerIndex = 0;
       send(ws, { type: 'created', key, playerIndex: 0 });
@@ -56,7 +68,12 @@ wss.on('connection', (ws) => {
     else if (data.type === 'join') {
       const s = sessions[data.key];
       if (!s) { send(ws, { type: 'error', msg: 'Session not found' }); return; }
+
+      // Prune dead connections before checking capacity
+      prunePlayers(s);
+
       if (s.players.length >= 2) { send(ws, { type: 'error', msg: 'Session is full' }); return; }
+
       s.players.push(ws);
       ws.sessionKey = data.key;
       ws.playerIndex = 1;
@@ -67,22 +84,36 @@ wss.on('connection', (ws) => {
     else if (data.type === 'selection') {
       const s = sessions[ws.sessionKey];
       if (!s) return;
-      s.selections[ws.playerIndex] = { ...s.selections[ws.playerIndex], ...data.data };
-      broadcast(s, { type: 'opponentSelection', data: data.data, from: ws.playerIndex }, ws);
+      const idx = ws.playerIndex || 0;
+      s.selections[idx] = { ...s.selections[idx], ...data.data };
+      broadcast(s, { type: 'opponentSelection', data: data.data, from: idx }, ws);
     }
 
     else if (data.type === 'ready') {
       const s = sessions[ws.sessionKey];
       if (!s) return;
-      s.readyCount = (s.readyCount || 0) + 1;
+
+      // Use a Set so duplicate readies from same player are ignored
+      s.readyPlayers.add(ws.playerIndex);
+
       broadcast(s, { type: 'opponentReady' }, ws);
-      if (s.readyCount >= 2) {
-        s.players.forEach(p => send(p, { type: 'startGame', selections: s.selections }));
-        s.readyCount = 0;
+
+      if (s.readyPlayers.size >= 2) {
+        s.readyPlayers.clear(); // reset for next round
+        // Send the finalMap from selections if available
+        const finalMap =
+          s.selections[0].finalMap ||
+          s.selections[1].finalMap ||
+          s.selections[0].mapVote ||
+          s.selections[1].mapVote ||
+          'city';
+        s.players.forEach(p => send(p, { type: 'startGame', map: finalMap }));
+        // Clear map votes for next round but keep skin/weapon
+        s.selections.forEach(sel => { delete sel.mapVote; delete sel.finalMap; });
       }
     }
 
-    else if (['input', 'state', 'roundEnd', 'chat'].includes(data.type)) {
+    else if (['state', 'roundEnd', 'chat'].includes(data.type)) {
       const s = sessions[ws.sessionKey];
       if (!s) return;
       broadcast(s, { ...data, from: ws.playerIndex }, ws);
@@ -94,7 +125,9 @@ wss.on('connection', (ws) => {
     const s = sessions[ws.sessionKey];
     if (!s) return;
     broadcast(s, { type: 'opponentLeft' }, ws);
-    delete sessions[ws.sessionKey];
+    // Only delete session if no live players remain
+    prunePlayers(s);
+    if (s.players.length === 0) delete sessions[ws.sessionKey];
   });
 });
 
