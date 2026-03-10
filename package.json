@@ -1,0 +1,9 @@
+{
+  "name": "plushybot-arena2d",
+  "version": "1.0.0",
+  "description": "Multiplayer 2D Fighting Game",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "dependencies": { "ws": "^8.14.2" },
+  "engines": { "node": ">=18" }
+}
