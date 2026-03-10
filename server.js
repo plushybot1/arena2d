@@ -106,8 +106,8 @@ wss.on('connection', (ws) => {
       }
     }
 
-    // ── GAME STATE RELAY ─────────────────────────────────────────
-    else if (data.type === 'state') {
+    // ── GAME STATE + HIT RELAY ───────────────────────────────────
+    else if (data.type === 'state' || data.type === 'hit') {
       const s = sessions[ws.sessionKey];
       if (!s) return;
       broadcast(s, { ...data, from: ws.playerIndex }, ws);

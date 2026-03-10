@@ -218,11 +218,11 @@ const SFX={
 // DATA
 // ═══════════════════════════════════════════════
 const SKINS=[
-  {id:'blade',  name:'BLADE',   hp:120,spd:5.0,color:'#f97316',accent:'#fbbf24',desc:'ATK ████ SPD ███'},
-  {id:'phantom',name:'PHANTOM', hp:80, spd:7.5,color:'#8b5cf6',accent:'#c4b5fd',desc:'ATK ███  SPD █████'},
-  {id:'storm',  name:'STORM',   hp:100,spd:5.5,color:'#3b82f6',accent:'#93c5fd',desc:'ATK ████ SPD ████'},
-  {id:'iron',   name:'IRON',    hp:170,spd:3.2,color:'#94a3b8',accent:'#e2e8f0',desc:'ATK █████SPD ██'},
-  {id:'fury',   name:'FURY',    hp:140,spd:4.0,color:'#22c55e',accent:'#86efac',desc:'ATK █████SPD ███'},
+  {id:'blade',  name:'BLADE',   hp:120,spd:2.5,color:'#f97316',accent:'#fbbf24',desc:'ATK ████ SPD ███'},
+  {id:'phantom',name:'PHANTOM', hp:80, spd:3.8,color:'#8b5cf6',accent:'#c4b5fd',desc:'ATK ███  SPD █████'},
+  {id:'storm',  name:'STORM',   hp:100,spd:2.8,color:'#3b82f6',accent:'#93c5fd',desc:'ATK ████ SPD ████'},
+  {id:'iron',   name:'IRON',    hp:170,spd:1.6,color:'#94a3b8',accent:'#e2e8f0',desc:'ATK █████SPD ██'},
+  {id:'fury',   name:'FURY',    hp:140,spd:2.0,color:'#22c55e',accent:'#86efac',desc:'ATK █████SPD ███'},
 ];
 const MAPS=[
   {id:'city',  name:'ROOFTOP', icon:'🌆',bg:'#07080e',ground:'#1a1d2e',plat:'#252840',accent:'#f97316'},
@@ -386,10 +386,27 @@ function connect(){
   ws.onmessage=e=>{
     const d=JSON.parse(e.data);
     if(d.type==='state'&&G){
-      const op=G.players[1-myIdx];
-      Object.assign(op,{x:d.x,y:d.y,vx:d.vx,vy:d.vy,hp:d.hp,facing:d.facing,atkTimer:d.atkTimer,hurtTimer:d.hurtTimer,dead:d.dead,inf:d.inf,spdMul:d.spdMul,dmgMul:d.dmgMul});
-      if(d.sfx==='hit') SFX.hit();
-      if(d.sfx==='die') SFX.die();
+      // Only sync position & visual state — NOT hp/dead (each player owns their own)
+      const op=G.players[d.from!==undefined?d.from:1-myIdx];
+      if(op&&d.from!==myIdx){
+        op.x=d.x; op.y=d.y; op.vx=d.vx; op.vy=d.vy;
+        op.facing=d.facing; op.atkTimer=d.atkTimer;
+        op.inf=d.inf; op.spdMul=d.spdMul; op.dmgMul=d.dmgMul;
+        // Sync dead only from opponent's own report
+        if(d.dead&&!op.dead){ op.dead=true; SFX.die(); }
+        if(d.sfx==='die') SFX.die();
+      }
+    } else if(d.type==='hit'&&G){
+      // Defender receives damage — apply to MY own player
+      const me=G.players[myIdx];
+      if(!me.dead&&!me.inf){
+        me.hp=Math.max(0,me.hp-d.dmg);
+        me.hurtTimer=18; me.vx=d.kx||0; me.vy=-5;
+        SFX.hit();
+        if(me.hp<=0&&!me.dead){ me.dead=true; SFX.die(); }
+      }
+      // Show hit particles on attacker's side too (from op position)
+      if(G) spawnHit(G.players[1-myIdx].x+14,G.players[1-myIdx].y+24,G.particles,G.players[1-myIdx].skin.color);
     } else { handleMsg(d); }
   };
 }
@@ -583,6 +600,7 @@ function startGame(mapId){
   document.getElementById('cheat-ui').style.display='flex';
   document.getElementById('lobby').style.display='none';
   document.getElementById('rend').style.display='none';
+  G.players.forEach(p=>p._justDied=false);
   setTimeout(()=>showMsg('FIGHT! ⚔️','#f97316'),300);
   requestAnimationFrame(gameLoop);
 }
@@ -621,25 +639,25 @@ function gameLoop(){
   }
   if(!prevGround&&me.onGround) SFX.land();
   me.x=Math.max(0,Math.min(CV.width-me.w,me.x));
-  if(me.atkTimer>0)me.atkTimer--;else me._heavy=false;
-  if(me.hurtTimer>0)me.hurtTimer--;
+  if(me.atkTimer>0) me.atkTimer--; else me._heavy=false;
 
-  // Attack
-  let sfx=null;
-  if(!me.dead&&me.atkTimer>0&&me.atkTimer>Math.floor(20/me.wpn.spd)&&op.hurtTimer<=0){
+  // Attack — send hit event to server (defender applies damage to themselves)
+  if(!me.dead&&me.atkTimer>0&&me.atkTimer===Math.floor((me._heavy?50:30)/me.wpn.spd)){
     const ax=me.x+me.w/2,ox=op.x+op.w/2;
-    if(Math.abs(ax-ox)<me.wpn.range+8&&Math.abs(me.y-op.y)<62&&me.facing===Math.sign(ox-ax)){
-      const dmg=(me.wpn.dmg+(me._heavy?me.wpn.dmg*0.8:0))*(me.dmgMul||1);
-      if(!op.inf)op.hp=Math.max(0,op.hp-dmg);
-      op.hurtTimer=16;op.vx=me.facing*7;op.vy=-4;
+    if(Math.abs(ax-ox)<me.wpn.range+10&&Math.abs(me.y-op.y)<70&&me.facing===Math.sign(ox-ax)){
+      const dmg=Math.round((me.wpn.dmg+(me._heavy?me.wpn.dmg*0.8:0))*(me.dmgMul||1));
+      wsSend({type:'hit',dmg,kx:me.facing*6}); // server relays to opponent
       spawnHit(op.x+op.w/2,op.y+op.h/2,G.particles,me.skin.color);
-      sfx='hit';SFX.hit();
-      if(op.hp<=0&&!op.dead){op.dead=true;sfx='die';SFX.die();}
+      SFX.atk();
     }
   }
-  if(me.y>CV.height+100&&!me.dead){me.dead=true;SFX.die();sfx='die';}
+  if(me.y>CV.height+100&&!me.dead){ me.dead=true; SFX.die(); }
+  if(me.hurtTimer>0) me.hurtTimer--;
 
-  wsSend({type:'state',x:me.x,y:me.y,vx:me.vx,vy:me.vy,hp:me.hp,facing:me.facing,atkTimer:me.atkTimer,hurtTimer:me.hurtTimer,dead:me.dead,inf:me.inf,spdMul:me.spdMul,dmgMul:me.dmgMul,sfx});
+  // Send my position/state (NOT hp — defender owns their own hp)
+  const sfx=me.dead&&me._justDied?'die':null;
+  if(me.dead&&!me._justDied) me._justDied=true;
+  wsSend({type:'state',x:me.x,y:me.y,vx:me.vx,vy:me.vy,facing:me.facing,atkTimer:me.atkTimer,dead:me.dead,inf:me.inf,spdMul:me.spdMul,dmgMul:me.dmgMul,sfx,from:myIdx});
 
   // Particles
   for(const arr of[G.particles,...G.players.map(p=>p.particles)]){
@@ -653,10 +671,10 @@ function gameLoop(){
   document.getElementById('p1b').style.width=Math.max(0,p1.hp/p1.maxHp*100)+'%';
   document.getElementById('p2b').style.width=Math.max(0,p2.hp/p2.maxHp*100)+'%';
 
-  // Round over
-  if((myP.dead||opP.dead)&&G.active){
+  // Round over — me.dead is authoritative for me; op.dead synced from their own state
+  if((me.dead||op.dead)&&G.active){
     G.active=false;
-    const winIdx=myP.dead?(1-myIdx):myIdx;
+    const winIdx=me.dead?(1-myIdx):myIdx;
     scores[winIdx]++;
     const isMe=winIdx===myIdx;
     if(isMe)SFX.win();
