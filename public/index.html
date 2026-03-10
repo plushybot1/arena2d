@@ -137,6 +137,7 @@ canvas{display:block;position:fixed;inset:0;}
       <h3>📡 Session Code</h3>
       <div class="code-display" id="display-key">------</div>
       <div class="status-text" id="wait-txt">⏳ Waiting for opponent...</div>
+      <button class="btn btn-red" id="start-game-btn" style="display:none" onclick="doStartGame()">▶ Start Game</button>
     </div>
   </div>
 </div>
@@ -380,8 +381,8 @@ function connect(){
   const proto=location.protocol==='https:'?'wss':'ws';
   ws=new WebSocket(`${proto}://${location.host}`);
   ws.onopen=()=>{ document.getElementById('conn-status').textContent='✅ Connected'; };
-  ws.onclose=()=>{ document.getElementById('conn-status').textContent='❌ Disconnected'; setTimeout(connect,3000); };
-  ws.onerror=()=>{ document.getElementById('conn-status').textContent='⚠️ Error'; };
+  ws.onclose=()=>{ document.getElementById('conn-status').textContent='❌ Disconnected — refresh to reconnect'; };
+  ws.onerror=()=>{ document.getElementById('conn-status').textContent='⚠️ Connection error'; };
   ws.onmessage=e=>{
     const d=JSON.parse(e.data);
     if(d.type==='state'&&G){
@@ -395,18 +396,49 @@ function connect(){
 function wsSend(o){ if(ws&&ws.readyState===1) ws.send(JSON.stringify(o)); }
 connect();
 
+function backToLobby(msg){
+  G=null; myMapVote=null; opMapVote=null;
+  document.getElementById('map-vote').style.display='none';
+  document.getElementById('rend').style.display='none';
+  document.getElementById('hud').style.display='none';
+  document.getElementById('cheat-ui').style.display='none';
+  document.getElementById('lobby').style.display='flex';
+  document.getElementById('waiting-box').style.display='none';
+  document.getElementById('start-game-btn').style.display='none';
+  document.getElementById('wait-txt').textContent='⏳ Waiting for opponent...';
+  if(msg){ document.getElementById('join-err').textContent=msg; setTimeout(()=>document.getElementById('join-err').textContent='',3500); }
+}
+
 function handleMsg(d){
-  if(d.type==='created'){ myIdx=0; sesKey=d.key; document.getElementById('display-key').textContent=d.key; document.getElementById('waiting-box').style.display='flex'; }
-  if(d.type==='joined'){  myIdx=1; sesKey=d.key; document.getElementById('waiting-box').style.display='flex'; document.getElementById('display-key').textContent=d.key; }
-  if(d.type==='opponentJoined'){ document.getElementById('wait-txt').textContent='✅ Opponent joined! Vote for a map →'; showMapVote(); }
-  if(d.type==='opponentSelection'){
-    if(d.data.skin)     opSkin=SKINS.find(s=>s.id===d.data.skin)||opSkin;
-    if(d.data.weapon)   opWpn=WEAPONS.find(w=>w.id===d.data.weapon)||opWpn;
-    if(d.data.mapVote){ opMapVote=d.data.mapVote; updateMapVoteUI(); checkMapVotes(); }
-    if(d.data.finalMap&&myIdx===1){ wsSend({type:'ready'}); } // P1 sends ready once when host picks map
+  if(d.type==='created'){
+    myIdx=0; sesKey=d.key;
+    document.getElementById('display-key').textContent=d.key;
+    document.getElementById('waiting-box').style.display='flex';
+    document.getElementById('wait-txt').textContent='⏳ Waiting for opponent...';
+    document.getElementById('start-game-btn').style.display='none';
   }
+  if(d.type==='joined'){
+    myIdx=1; sesKey=d.key;
+    document.getElementById('display-key').textContent=d.key;
+    document.getElementById('waiting-box').style.display='flex';
+    document.getElementById('wait-txt').textContent='⏳ Waiting for host to start...';
+    document.getElementById('start-game-btn').style.display='none';
+  }
+  if(d.type==='opponentJoined'){
+    document.getElementById('wait-txt').textContent='✅ Opponent joined!';
+    if(myIdx===0) document.getElementById('start-game-btn').style.display='block';
+  }
+  if(d.type==='beginMapVote'){ showMapVote(); }
+  if(d.type==='opponentSelection'){
+    if(d.data&&d.data.skin)   opSkin=SKINS.find(s=>s.id===d.data.skin)||opSkin;
+    if(d.data&&d.data.weapon) opWpn=WEAPONS.find(w=>w.id===d.data.weapon)||opWpn;
+  }
+  if(d.type==='opponentMapVote'){ opMapVote=d.map; updateMapVoteUI(); }
   if(d.type==='startGame'){ startGame(d.map); }
-  if(d.type==='opponentLeft'){ showMsg('OPPONENT LEFT','#ef4444'); setTimeout(()=>{G=null;hideGame();},2000); }
+  if(d.type==='opponentLeft'){
+    showMsg('OPPONENT LEFT','#ef4444');
+    setTimeout(()=>backToLobby('Opponent left the game.'), 1800);
+  }
   if(d.type==='error'){ document.getElementById('join-err').textContent=d.msg; }
 }
 
@@ -477,13 +509,19 @@ function toggleJoin(){
 function doJoin(){
   const k=document.getElementById('join-input').value.trim().toUpperCase();
   if(k.length<4){document.getElementById('join-err').textContent='Enter valid code';return;}
+  document.getElementById('join-err').textContent='';
   ac(); wsSend({type:'join',key:k});
+}
+function doStartGame(){
+  document.getElementById('start-game-btn').style.display='none';
+  wsSend({type:'triggerStart'});
 }
 
 // ═══════════════════════════════════════════════
 // MAP VOTE
 // ═══════════════════════════════════════════════
 function showMapVote(){
+  document.getElementById('waiting-box').style.display='none';
   document.getElementById('map-vote').style.display='flex';
   myMapVote=null; opMapVote=null;
   const g=document.getElementById('map-vote-grid'); g.innerHTML='';
@@ -491,13 +529,14 @@ function showMapVote(){
     const card=document.createElement('div'); card.className='mvcard'; card.id='mvc-'+map.id;
     card.innerHTML=`<div class="micon2">${map.icon}</div><div class="mname2">${map.name}</div><div class="mvotes" id="mvotes-${map.id}"></div>`;
     card.onclick=()=>{
+      if(myMapVote) return; // already voted
       myMapVote=map.id; SFX.vote();
-      g.querySelectorAll('.mvcard').forEach(c=>{c.classList.remove('myvote','both');});
-      updateMapVoteUI(); wsSend({type:'selection',data:{mapVote:map.id}});
-      checkMapVotes();
+      updateMapVoteUI();
+      wsSend({type:'mapVote', map:map.id}); // server handles resolution
     };
     g.appendChild(card);
   });
+  document.getElementById('vote-status').textContent='Pick your arena!';
 }
 function updateMapVoteUI(){
   MAPS.forEach(m=>{
@@ -512,16 +551,8 @@ function updateMapVoteUI(){
     vtxt.textContent=(my?'✅ You ':'')+(op?'🔵 Opp':'');
   });
   const voted=(myMapVote?1:0)+(opMapVote?1:0);
-  document.getElementById('vote-status').textContent=voted===0?'Waiting for votes...':`${voted}/2 voted`;
-}
-function checkMapVotes(){
-  if(!myMapVote||!opMapVote) return;
-  // Both voted — pick winner (same=chosen, diff=random between two)
-  let chosen=myMapVote===opMapVote?myMapVote:[myMapVote,opMapVote][Math.random()<.5?0:1];
-  if(myIdx===0){ // only host picks final map and sends ready; P1 sends ready when they get finalMap
-    wsSend({type:'selection',data:{finalMap:chosen}});
-    wsSend({type:'ready'});
-  }
+  document.getElementById('vote-status').textContent=
+    myMapVote?`Voted! Waiting for opponent... (${voted}/2)`:'Pick your arena!';
 }
 
 // ═══════════════════════════════════════════════
@@ -702,12 +733,19 @@ function drawPlayer(p){
 }
 
 function showMsg(t,c){const el=document.getElementById('msg-box');el.textContent=t;el.style.color=c;el.style.opacity='1';clearTimeout(el._t);el._t=setTimeout(()=>el.style.opacity='0',1600);}
-function hideGame(){document.getElementById('hud').style.display='none';document.getElementById('cheat-ui').style.display='none';document.getElementById('lobby').style.display='flex';document.getElementById('rend').style.display='none';}
-function goLobby(){G=null;hideGame();}
+function goLobby(){backToLobby();}
 
 document.getElementById('btn-rematch').onclick=()=>{
   document.getElementById('rend').style.display='none';
-  myMapVote=null;opMapVote=null;showMapVote();
+  // Host triggers map vote again; P1 waits
+  if(myIdx===0){
+    wsSend({type:'triggerStart'});
+    showMapVote();
+  } else {
+    document.getElementById('map-vote').style.display='flex';
+    document.getElementById('vote-status').textContent='Waiting for host to start next round...';
+    myMapVote=null; opMapVote=null;
+  }
 };
 
 // Cheat codes

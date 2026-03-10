@@ -32,15 +32,12 @@ const wss = new WebSocket.Server({ server });
 function send(ws, msg) {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 }
-
 function broadcast(session, msg, exclude) {
   session.players.forEach(p => {
     if (p !== exclude && p.readyState === WebSocket.OPEN)
       p.send(JSON.stringify(msg));
   });
 }
-
-// Remove closed/dead connections from a session's player list
 function prunePlayers(session) {
   session.players = session.players.filter(
     p => p.readyState === WebSocket.OPEN || p.readyState === WebSocket.CONNECTING
@@ -52,68 +49,65 @@ wss.on('connection', (ws) => {
     let data;
     try { data = JSON.parse(raw); } catch { return; }
 
+    // ── CREATE SESSION ──────────────────────────────────────────
     if (data.type === 'create') {
       let key = randomKey();
       while (sessions[key]) key = randomKey();
-      sessions[key] = {
-        players: [ws],
-        selections: [{}, {}],
-        readyPlayers: new Set(), // track per-player ready state
-      };
+      sessions[key] = { players: [ws], mapVotes: {} };
       ws.sessionKey = key;
       ws.playerIndex = 0;
-      send(ws, { type: 'created', key, playerIndex: 0 });
+      send(ws, { type: 'created', key });
     }
 
+    // ── JOIN SESSION ────────────────────────────────────────────
     else if (data.type === 'join') {
-      const s = sessions[data.key];
-      if (!s) { send(ws, { type: 'error', msg: 'Session not found' }); return; }
-
-      // Prune dead connections before checking capacity
+      const key = (data.key || '').toUpperCase().trim();
+      const s = sessions[key];
+      if (!s) { send(ws, { type: 'error', msg: 'Session not found — check the code' }); return; }
       prunePlayers(s);
-
       if (s.players.length >= 2) { send(ws, { type: 'error', msg: 'Session is full' }); return; }
-
       s.players.push(ws);
-      ws.sessionKey = data.key;
+      ws.sessionKey = key;
       ws.playerIndex = 1;
-      send(ws, { type: 'joined', key: data.key, playerIndex: 1 });
+      send(ws, { type: 'joined', key });
       broadcast(s, { type: 'opponentJoined' }, ws);
     }
 
+    // ── HOST STARTS THE GAME (triggers map vote for both) ───────
+    else if (data.type === 'triggerStart') {
+      const s = sessions[ws.sessionKey];
+      if (!s || ws.playerIndex !== 0) return; // only host
+      s.mapVotes = {}; // reset votes
+      s.players.forEach(p => send(p, { type: 'beginMapVote' }));
+    }
+
+    // ── SKIN / WEAPON SELECTION (relay only) ────────────────────
     else if (data.type === 'selection') {
       const s = sessions[ws.sessionKey];
       if (!s) return;
-      const idx = ws.playerIndex || 0;
-      s.selections[idx] = { ...s.selections[idx], ...data.data };
-      broadcast(s, { type: 'opponentSelection', data: data.data, from: idx }, ws);
+      broadcast(s, { type: 'opponentSelection', data: data.data }, ws);
     }
 
-    else if (data.type === 'ready') {
+    // ── MAP VOTE ────────────────────────────────────────────────
+    else if (data.type === 'mapVote') {
       const s = sessions[ws.sessionKey];
       if (!s) return;
+      s.mapVotes[ws.playerIndex] = data.map;
+      broadcast(s, { type: 'opponentMapVote', map: data.map }, ws);
 
-      // Use a Set so duplicate readies from same player are ignored
-      s.readyPlayers.add(ws.playerIndex);
-
-      broadcast(s, { type: 'opponentReady' }, ws);
-
-      if (s.readyPlayers.size >= 2) {
-        s.readyPlayers.clear(); // reset for next round
-        // Send the finalMap from selections if available
-        const finalMap =
-          s.selections[0].finalMap ||
-          s.selections[1].finalMap ||
-          s.selections[0].mapVote ||
-          s.selections[1].mapVote ||
-          'city';
-        s.players.forEach(p => send(p, { type: 'startGame', map: finalMap }));
-        // Clear map votes for next round but keep skin/weapon
-        s.selections.forEach(sel => { delete sel.mapVote; delete sel.finalMap; });
+      // Both voted — server picks the map and starts
+      const votes = Object.values(s.mapVotes);
+      if (votes.length >= 2) {
+        const chosen = votes[0] === votes[1]
+          ? votes[0]
+          : votes[Math.floor(Math.random() * votes.length)];
+        s.mapVotes = {};
+        s.players.forEach(p => send(p, { type: 'startGame', map: chosen }));
       }
     }
 
-    else if (['state', 'roundEnd', 'chat'].includes(data.type)) {
+    // ── GAME STATE RELAY ─────────────────────────────────────────
+    else if (data.type === 'state') {
       const s = sessions[ws.sessionKey];
       if (!s) return;
       broadcast(s, { ...data, from: ws.playerIndex }, ws);
@@ -125,11 +119,10 @@ wss.on('connection', (ws) => {
     const s = sessions[ws.sessionKey];
     if (!s) return;
     broadcast(s, { type: 'opponentLeft' }, ws);
-    // Only delete session if no live players remain
     prunePlayers(s);
     if (s.players.length === 0) delete sessions[ws.sessionKey];
   });
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`ARENA 2D running on port ${PORT}`));
+server.listen(PORT, () => console.log(`ARENA 2D on port ${PORT}`));
