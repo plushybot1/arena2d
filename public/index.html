@@ -625,8 +625,8 @@ function gameLoop(){
     if(J&&!me._jumpHeld&&me.jumpsLeft>0){me.vy=-13.5;me.jumpsLeft--;me._jumpHeld=true;SFX.jump();}
     if(!J) me._jumpHeld=false;
 
-    if(A&&me.atkTimer<=0){me.atkTimer=Math.floor(30/me.wpn.spd);SFX.atk();}
-    if(H&&me.atkTimer<=0){me.atkTimer=Math.floor(50/me.wpn.spd);me._heavy=true;SFX.atk();}
+    if(A&&me.atkTimer<=0){me.atkTimer=Math.floor(150/me.wpn.spd);SFX.atk();}
+    if(H&&me.atkTimer<=0){me.atkTimer=Math.floor(250/me.wpn.spd);me._heavy=true;SFX.atk();}
   }
 
   const prevGround=me.onGround;
@@ -642,7 +642,7 @@ function gameLoop(){
   if(me.atkTimer>0) me.atkTimer--; else me._heavy=false;
 
   // Attack — send hit event to server (defender applies damage to themselves)
-  if(!me.dead&&me.atkTimer>0&&me.atkTimer===Math.floor((me._heavy?50:30)/me.wpn.spd)){
+  if(!me.dead&&me.atkTimer>0&&me.atkTimer===Math.floor((me._heavy?250:150)/me.wpn.spd)){
     const ax=me.x+me.w/2,ox=op.x+op.w/2;
     if(Math.abs(ax-ox)<me.wpn.range+10&&Math.abs(me.y-op.y)<70&&me.facing===Math.sign(ox-ax)){
       const dmg=Math.round((me.wpn.dmg+(me._heavy?me.wpn.dmg*0.8:0))*(me.dmgMul||1));
